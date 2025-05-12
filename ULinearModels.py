@@ -13,7 +13,7 @@ class UElasticNet:
     start_weights_type: {'zeroes', 'random', 'optimal'}, default='optimal'
         Способ задания начальных весов
 
-    solver_type: {'sgd', 'default_gradient', 'analytic'}, default='default_gradient'
+    solver_type: {'sgd', 'default_gradient', 'analytic', 'singular'}, default='default_gradient'
         Алгоритм оптимизации
 
     step: float, default=None
@@ -52,7 +52,7 @@ class UElasticNet:
         vector_2 = x * y
         return vector_1 - vector_2
 
-    def _gradientMethod(self, gradient_type):
+    def _gradientMethod(self, gradientSolver):
         weights = self._startWeightsGens[self.start_weights_type](self)
         prev_weights = weights + np.ones(len(weights))
         for k in range(1, self.max_iter+1):
@@ -61,18 +61,23 @@ class UElasticNet:
             prev_weights = weights
             h = (1 / np.sqrt(k)) if self.step is None else self.step
             weights = weights * (1 - h * self.alpha * (1 - self.l1_ratio)) \
-                      - h * self._gradient_type[gradient_type](self, weights) \
+                      - h * gradientSolver(weights) \
                       - h * self.alpha * self.l1_ratio * np.sign(weights)
         return weights
     
     def _defaultGradientSolver(self):
-        return self._gradientMethod('default')
+        return self._gradientMethod(self._countGradientFull)
 
     def _SGSolver(self):
-        return self._gradientMethod('sg')
+        return self._gradientMethod(self._countGradientSG)
 
     def _analyticSolver(self):
         return np.linalg.inv(self.X.T@self.X) @ self.X.T @ self.y.reshape(-1, 1)
+
+    def _singularSolver(self):
+        V, S, Uh = np.linalg.svd(self.X, full_matrices=False)
+        self.pseudoinverse_ = Uh.T @ np.diag(1/S) @ V.T
+        return self.pseudoinverse_ @ self.y
 
     def fit(self, X, y):
         np.random.seed(self.random_seed)
@@ -89,10 +94,8 @@ class UElasticNet:
 
     _solver_type = {'sgd': _SGSolver,
                     'default_gradient': _defaultGradientSolver,
-                    'analytic': _analyticSolver}
-    
-    _gradient_type = {'sg': _countGradientSG,
-                      'default': _countGradientFull}
+                    'analytic': _analyticSolver,
+                    'singular': _singularSolver}
 
 class ULogClassification:
     """
