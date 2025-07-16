@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import functools
 from collections import deque
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.tree import DecisionTreeRegressor
 
 class ULogicalClassifier:
     """
@@ -199,3 +201,169 @@ class UDecisionTreeClassifier:
         return np.array([self._passTree(x) for x in np.array(X)])
     
     _criterionType = {'gini': _GiniCriterion}
+
+class URandomForestClassifier:
+    """
+    Сдучайный лес(Bagging).
+    Параметры:
+    --------
+    n_estimators: integer, default=10
+        Кол-во деревьев в лесу
+        
+    criterion: {'gini'}, default='gini'
+        Критерий информативности
+
+    max_depth: integer, default=1
+        Максимальная глубина дерева
+
+    max_features: {'sqrt', integer}, default='sqrt'
+        Кол-во случайных признаков для построения дерева
+        'sqrt' - квадратный корень из общего числа признаков
+
+    subset_size: float, default=0.7
+        Относительный размер обучающей подвыборки к общей выборке. Объекты БЕЗ повторений
+    """
+    def __init__(self,
+                 n_estimators=10,
+                 criterion='gini',
+                 max_depth=1,
+                 max_features='sqrt',
+                 subset_size=0.7):
+        self.n_estimators = n_estimators
+        self.criterion = criterion
+        self.max_depth = max_depth
+        self.max_features = max_features
+        self.subset_size = subset_size
+
+    def fit(self, X, y):
+        self.ensemble_ = []
+        self.X_train, self.y_train = np.array(X), np.array(y)
+        n, m = self.X_train.shape
+        while len(self.ensemble_) < self.n_estimators:
+            subset_indexes = np.random.choice(n, 
+                                              size=int(abs(min(n*self.subset_size, n))), 
+                                              replace=False)
+            feature_indexes = np.random.choice(m, 
+                                               size=int((np.sqrt(m) if self.max_features=='sqrt' else self.max_features)), 
+                                               replace=False)
+            sub_X_train = self.X_train[subset_indexes]
+            sub_X_train = sub_X_train[:,feature_indexes]
+            sub_y_train = self.y_train[subset_indexes]
+            cur_tree = UDecisionTreeClassifier(self.criterion, self.max_depth)
+            cur_tree.fit(sub_X_train, sub_y_train)
+            self.ensemble_.append((cur_tree, feature_indexes))
+
+    @staticmethod
+    def _passEnsemble(cur_tree, X, feature_indexes):
+        return cur_tree.predict(X[:,feature_indexes])
+    
+    def predict(self, X):
+        X = np.array(X)
+        trees_result = np.array([self._passEnsemble(cur_tree, X, feature_indexes)
+                                for cur_tree, feature_indexes in self.ensemble_])
+        object_result = []
+        for tree_res in trees_result.T:
+            freq = {}
+            for res in tree_res:
+                freq[res] = freq.setdefault(res, 0) + 1
+            object_result.append(max(freq.items(), key=(lambda x: x[1]))[0])
+        return np.array(object_result)
+
+class UAdaBoost:
+    """
+    Адаптивный бустинг на двух классах Y = {+-1} на деревьях.
+    Параметры:
+    --------
+    n_estimators: integer, default=10
+        Кол-во деревьев в лесу
+        
+    max_depth: integer, default=1
+        Максимальная глубина дерева
+    """
+    def __init__(self, n_estimators=10, max_depth=1):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+
+    def _getMistake(self, estimator):
+        y_predict = estimator.predict(self.X_train)
+        result = np.sum(self.weights_ * (y_predict != self.y_train))
+        return result
+
+    def fit(self, X, y):
+        self.X_train, self.y_train = np.array(X), np.array(y)
+        self.estimators_ = []
+        m, n = self.X_train.shape
+        self.weights_ = np.array([1/m] * m)
+        for _ in range(self.n_estimators):
+            #Обучение базового алгоритма
+            estimator = DecisionTreeClassifier(max_depth=self.max_depth)
+            estimator.fit(self.X_train, self.y_train, sample_weight=self.weights_)
+            #Вычисление веса алгоритма
+            mistake = self._getMistake(estimator)
+            alpha = np.log((1-mistake)/mistake) / 2
+            #Добавление алгоритма в ансамбль
+            self.estimators_.append((alpha, estimator))
+            #Корректировка весов объектов
+            y_predict = estimator.predict(self.X_train)
+            self.weights_ *= np.exp(-alpha*self.y_train*y_predict)
+            weights_sum = np.sum(self.weights_)
+            self.weights_ /= weights_sum
+    
+    def predict(self, X_test):
+        X_test = np.array(X_test)
+        return np.sign(np.array(np.sum([alpha*estimator.predict(X_test) for alpha, estimator in self.estimators_], 
+                                       axis=0)))
+
+class UGradBoost:
+    """
+    Градиентный бустинг на деревьях
+    Параметры:
+    --------
+    loss : {'squared_error'}, default='squared_error'
+        Вид функции ошибки. От нее будет считаться градиент
+    
+    n_estimators: integer, default=10
+        Кол-во деревьев в лесу
+        
+    max_depth: integer, default=1
+        Максимальная глубина дерева
+    """
+    def __init__(self, loss='squared_error', n_estimators=10, max_depth=1):
+        self.loss = loss
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+
+    def _squaredErrorAlpha(self, estimator):
+        y_predict = estimator.predict(self.X_train)
+        result = (y_predict @ (self.y_train - self.cur_approx_)) / (y_predict @ y_predict)
+        return max(result, 0.01)
+    
+    def _squaredErrorGrad(self):
+        return self.cur_approx_ - self.y_train
+    
+    def fit(self, X, y):
+        self.X_train, self.y_train = np.array(X), np.array(y)
+        m, n = self.X_train.shape
+        self.estimators_ = []
+        self.cur_approx_ = np.zeros(m)
+        for _ in range(self.n_estimators):
+            #Обучение базового алгоритма
+            estimator = DecisionTreeRegressor(max_depth=self.max_depth)
+            cur_loss = self._lossFunctionGrad[self.loss](self)
+            estimator.fit(self.X_train, -cur_loss)
+            #Вычисление веса алгоритма
+            alpha = self._lossFunctionAlpha[self.loss](self, estimator)
+            #Добавление алгоритма в ансамбль
+            self.estimators_.append((alpha, estimator))
+            #Корректировка приближения
+            y_predict = estimator.predict(self.X_train)
+            self.cur_approx_ += alpha * y_predict
+
+    def predict(self, X_test):
+        X_test = np.array(X_test)
+        return np.sum([alpha*estimator.predict(X_test) for alpha, estimator in self.estimators_], 
+                      axis=0)
+    
+    _lossFunctionAlpha = {'squared_error': _squaredErrorAlpha}
+
+    _lossFunctionGrad = {'squared_error': _squaredErrorGrad}
