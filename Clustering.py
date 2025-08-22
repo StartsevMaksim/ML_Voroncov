@@ -78,3 +78,98 @@ class UGaussianMixture:
     def predict(self, X):
         prob_arr = self.predict_proba(X)
         return np.argmax(prob_arr, axis=1)
+
+class UKMean:
+    """
+    Кластеризация K-средних. Основана на расстоянии от центра кластера до каждого объекта
+    Параметры:
+    --------
+    n_clusters: int, default=1
+        Количество кластеров(компонент)
+        
+    max_iter: int, default=100
+        Максимальное кол-во итераций
+    """
+    def __init__(self, n_clusters=1, max_iter=100):
+        self.n_clusters = n_clusters
+        self.max_iter = max_iter
+
+    def _initClusterCenters(self, X):
+        return X[np.random.choice(X.shape[0], self.n_clusters, replace=False)]
+
+    def _getObjectCenterDistance(self, x):
+        return np.linalg.norm(self.cluster_centers_ - x, axis=1)
+
+    def _buildClusters(self, X):
+        return np.argmin(np.apply_along_axis(self._getObjectCenterDistance, 
+                                             axis=1, 
+                                             arr=X),
+                         axis=1)
+    
+    def _getNewClusterCenters(self, clusters, X):
+        return np.array([np.mean(X[clusters==cluster_label], axis=0) 
+                         for cluster_label in range(self.n_clusters)])
+    
+    def fit(self, X):
+        X = np.array(X)
+        self.cluster_centers_ = self._initClusterCenters(X)
+        clusters = np.zeros(X.shape[0])
+        for _ in range(self.max_iter):
+            new_clusters = self._buildClusters(X)
+            self.cluster_centers_ = self._getNewClusterCenters(new_clusters, X)
+            if np.sum(new_clusters-clusters) == 0:
+                break
+            clusters = new_clusters  
+
+    def predict(self, X):
+        X = np.array(X)
+        return self._buildClusters(X)
+
+class UDBSCAN:
+    """
+    Кластеризация DBSCAN (Density-based spatial clustering of applications with noise). Подразделяет все объекты на типы:
+    -Untagged - непомеченный объект
+    -Boundary - граничный объект
+    -Noise - шумовой объект
+    -Core - корневой
+    Параметры:
+    --------
+    eps: float, default=0.5
+        Радиус эпсилон окрестности
+        
+    min_samples: int, default=5
+        Минимальное кол-во объектов в эпсилон окрестности точки, чтобы считать ее корневой. *Сама точка входит в окрестность!
+    """
+    def __init__(self, eps=0.5, min_samples=5):
+        self.eps = eps
+        self.min_samples = min_samples
+    
+    def _getEpsNeighborhood(self, x, check_X):
+        eps_neigh = np.argwhere(np.linalg.norm(check_X-x, axis=1)<self.eps).reshape(-1)
+        return eps_neigh        
+    
+    def fit(self, X):
+        X = np.array(X)
+        self.n_clusters_ = -1
+        self.clusters_ = np.full(X.shape[0], self.n_clusters_)
+        self.object_types_ = np.full(X.shape[0], 'Untagged')
+        while np.sum(self.object_types_=='Untagged') > 0:
+            target_index = np.random.choice(np.argwhere(self.object_types_=='Untagged').reshape(-1), size=1)[0]
+            eps_neigh = self._getEpsNeighborhood(X[target_index], X)
+            if eps_neigh.shape[0] < self.min_samples:
+                self.object_types_[target_index] = 'Noise'
+            else:
+                self.object_types_[target_index] = 'Core'
+                self.n_clusters_ += 1
+                self.clusters_[target_index] = self.n_clusters_
+                cluster = set(eps_neigh)
+                while cluster:
+                    object_index = cluster.pop()
+                    if self.object_types_[object_index] in ('Untagged', 'Noise'):
+                        self.clusters_[object_index] = self.n_clusters_
+                        object_eps_neigh = self._getEpsNeighborhood(X[object_index], X)
+                        if object_eps_neigh.shape[0] < self.min_samples:
+                            self.object_types_[object_index] = 'Boundary'
+                        else:
+                            self.object_types_[object_index] = 'Core'
+                            cluster.update(object_eps_neigh)
